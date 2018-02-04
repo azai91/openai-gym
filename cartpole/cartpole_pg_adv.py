@@ -54,6 +54,7 @@ def run_episode(env, policy_grad, value_grad, sess):
 
         old_observation = observation
         observation, reward, done, info = env.step(action)
+        env.render()
         transitions.append((old_observation, action, reward))
         totalreward += reward
 
@@ -94,8 +95,8 @@ for i in range(10000):
     reward = run_episode(env, policy_grad, value_grad, sess)
     rewards.append(reward)
 
-rewards = np.array(rewards)
-np.save('pg_adv.npy', rewards)
+# rewards = np.array(rewards)
+# np.save('pg_adv.npy', rewards)
 
 
 
