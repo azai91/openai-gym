@@ -54,7 +54,6 @@ def run_episode(env, policy_grad, value_grad, sess):
 
         old_observation = observation
         observation, reward, done, info = env.step(action)
-        env.render()
         transitions.append((old_observation, action, reward))
         totalreward += reward
 
@@ -84,28 +83,19 @@ def run_episode(env, policy_grad, value_grad, sess):
     return totalreward
 
 env = gym.make('CartPole-v0')
-# env.monitor.start('cartpole-hill/', force=True)
 policy_grad = policy_gradient()
 value_grad = value_gradient()
 sess = tf.InteractiveSession()
 sess.run(tf.global_variables_initializer())
 
-for i in range(2000):
+rewards = []
+
+for i in range(10000):
     reward = run_episode(env, policy_grad, value_grad, sess)
-    if reward == 200:
-        print('reward 200')
-        print i
-        break
+    rewards.append(reward)
 
-t = 0
-for _ in range(1000):
-    reward = run_episode(env, policy_grad, value_grad, sess)
-    print(reward)
-    t += reward
-
-print(t / 1000)
-# env.monitor.close()
-
+rewards = np.array(rewards)
+np.save('pg_adv.npy', rewards)
 
 
 
