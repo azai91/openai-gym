@@ -7,6 +7,8 @@ import numpy as np
 from torch import nn
 from torch.autograd import Variable
 from torch import Tensor
+import torch.optim as optim
+
 gamma = 0.97
 
 class PolicyGradient(nn.Module):
@@ -18,8 +20,7 @@ class PolicyGradient(nn.Module):
         return F.softmax(self.linear(state),dim=1)
 
 
-
-def run_episode(env, policy_gradient):
+def run_episode(env, policy_gradient, pl_optimizer):
 
     observation = env.reset()
     rewards = []
@@ -28,6 +29,8 @@ def run_episode(env, policy_gradient):
     actions = []
     probs = []
     totalreward = 0
+
+    pl_optimizer.zero_grad()
 
     for _ in range(200):
         obs_vector = Variable(Tensor(np.expand_dims(observation, axis=0)))
@@ -55,20 +58,26 @@ def run_episode(env, policy_gradient):
             discount *= gamma
         future_rewards.append(future_reward)
 
+    # import ipdb
+    # ipdb.set_trace()
     prob_vector = torch.cat(probs)
-    action_vector = Variable(Tensor(actions).unsqueeze(1), requires_grad=False) # [N, 1]
-    good_prob = (prob_vector * action_vector).sum()
-    loss -= good_prob.log() * reward # [N, 1]
+    action_vector = Variable(Tensor(actions)) # [N, 1]
+    good_prob = (prob_vector * action_vector).sum(dim=1).unsqueeze(dim=1)
+    reward_vector = Variable(Tensor(rewards).unsqueeze(1))
+    loss = good_prob.log() * reward_vector # [N, 1]
     loss.backward()
+    pl_optimizer.step()
 
     return totalreward
 
 env = gym.make('CartPole-v0')
 policy_grad = PolicyGradient()
+pl_optimizer = optim.Adam(policy_grad.parameters(), lr=0.01)
+
 rewards = []
 
 for i in range(10000):
-    reward = run_episode(env, policy_grad)
+    reward = run_episode(env, policy_grad, pl_optimizer)
     rewards.append(reward)
 
 rewards = np.array(rewards)

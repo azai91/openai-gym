@@ -39,7 +39,6 @@ def run_episode(env, policy_gradient,value_gradient,pl_optimizer,vl_optimizer):
     future_rewards = []
     actions = []
     probs = []
-    pl_loss = 0
     totalreward = 0
     advantages = []
     pred_values = []
@@ -65,38 +64,40 @@ def run_episode(env, policy_gradient,value_gradient,pl_optimizer,vl_optimizer):
         if done:
             break
 
-    discount = 1
     for i1, trans in enumerate(transitions):
         obs, action, reward = trans
 
         future_reward = 0
+        discount = 1
         for i2 in range(i1, len(transitions)):
-            future_reward = discount * transitions[i2][2]
+            future_reward += discount * transitions[i2][2]
             discount *= gamma
         future_rewards.append(future_reward)
         pred_value = value_gradient(Variable(Tensor(obs).unsqueeze(0)))
         pred_values.append(pred_value)
 
-        advantages.append(future_reward - pred_value)
+        advantages.append(future_reward - pred_value.data[0][0])
 
 
 
     vl_loss_func = nn.MSELoss()
+
     pred_value_vector = torch.cat(pred_values)
-    vl_loss = vl_loss_func(pred_value_vector,Variable(Tensor(future_rewards).unsqueeze(1),requires_grad=False))
+    future_values_vector = Variable(Tensor(future_rewards).unsqueeze(1))
+    vl_loss = vl_loss_func(pred_value_vector,future_values_vector)
     vl_loss.backward()
     vl_optimizer.step()
 
     prob_vector = torch.cat(probs)
-    action_vector = Variable(Tensor(actions), requires_grad=False) # [N, 1]
-    good_prob = (prob_vector * action_vector).sum(dim=1)
-    adv_vector = torch.cat(advantages)
-    adv_vector.requires_grad = False
-    pl_loss -= good_prob.log() * adv_vector # [N, 1]
+    action_vector = Variable(Tensor(actions)) # [N, 1]
+    good_prob = (prob_vector * action_vector).sum(dim=1).unsqueeze(dim=1)
+
+    adv_vector = Variable(Tensor(advantages).unsqueeze(1))
+    pl_loss = -(good_prob.log() * adv_vector).sum() # [N, 1]
     pl_loss.backward()
     pl_optimizer.step()
 
-    return totalreward
+    return totalreward, advantages, vl_loss
 
 env = gym.make('CartPole-v0')
 policy_grad = PolicyGradient()
@@ -107,9 +108,11 @@ vl_optimizer = optim.Adam(value_grad.parameters(), lr=0.1)
 rewards = []
 
 for i in range(10000):
-    reward = run_episode(env,policy_grad,value_grad,pl_optimizer,vl_optimizer)
-    print(reward)
+    reward, advantages, vl_loss = run_episode(env,policy_grad,value_grad,pl_optimizer,vl_optimizer)
     rewards.append(reward)
+    if i % 100 == 0:
+        print(i, reward, sum(advantages))
+        print(vl_loss[0][0])
 
 rewards = np.array(rewards)
 np.save('pg_adv.npy', rewards)
