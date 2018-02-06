@@ -1,108 +1,118 @@
-import tensorflow as tf
-import numpy as np
-import random
+import torch.nn.functional as F
+import torch
 import gym
+import random
+import numpy as np
+
+from torch import nn
+from torch.autograd import Variable
+from torch import Tensor
+import torch.optim as optim
 
 gamma = 0.97
 
-def policy_gradient():
-    with tf.variable_scope('policy'):
-        params = tf.get_variable('policy_parameters',[4,2])
-        state = tf.placeholder('float',[None, 4])
-        actions = tf.placeholder('float',[None,2])
-        adv = tf.placeholder('float',[None, 1])
-        linear = tf.matmul(state, params) # [None, 2]
-        probs = tf.nn.softmax(linear) # [None, 2]
-        good_probs = tf.reduce_sum(tf.multiply(probs, actions), reduction_indices=[1]) # [None, 1]
-        elg = tf.log(good_probs) * adv # pg method
-        loss = -tf.reduce_sum(elg)
-        optimizer = tf.train.AdamOptimizer(0.01).minimize(loss)
-        return probs, state, actions, adv, optimizer
+class PolicyGradient(nn.Module):
+    def __init__(self):
+        super(PolicyGradient,self).__init__()
+        self.linear = nn.Linear(4,2)
+
+    def forward(self, state):
+        return F.softmax(self.linear(state),dim=1)
 
 
-def value_gradient():
-    with tf.variable_scope('value'):
-        state = tf.placeholder('float',[None,4])
-        newvals = tf.placeholder('float',[None,1])
-        w1 = tf.get_variable('w1',[4,10])
-        b1 = tf.get_variable('b1',[10])
-        h1 = tf.nn.relu(tf.matmul(state,w1) + b1)
-        w2 = tf.get_variable('w2',[10,1])
-        b2 = tf.get_variable('b2',[1])
-        calc = tf.matmul(h1,w2) + b2 # [1]
-        diffs = calc - newvals
-        loss = tf.nn.l2_loss(diffs)
-        optimizer = tf.train.AdamOptimizer(0.1).minimize(loss)
-        return calc, state, newvals, optimizer, loss
+class ValueGradient(nn.Module):
+    def __init__(self):
+        super(ValueGradient,self).__init__()
+        self.linear1 = nn.Linear(4,10)
+        self.linear2 = nn.Linear(10,1)
 
-def run_episode(env, policy_grad, value_grad, sess):
-    pl_calc, pl_state, pl_actions, pl_adv, pl_optimizer = policy_grad
-    vl_calc, vl_state, vl_newvals, vl_optimizer, vl_loss = value_grad
+    def forward(self, state):
+        h1 = F.relu(self.linear1(state))
+        reward = self.linear2(h1)
+        return reward
+
+
+def run_episode(env, policy_gradient,value_gradient,pl_optimizer,vl_optimizer):
+
     observation = env.reset()
+    transitions = []
+    future_rewards = []
+    actions = []
+    probs = []
+    pl_loss = 0
     totalreward = 0
-    states, actions, advs, transitions, update_vals = [],[],[],[],[]
+    advantages = []
+    pred_values = []
 
-    # follow policy for episode
+    pl_optimizer.zero_grad()
+    vl_optimizer.zero_grad()
+
     for _ in range(200):
-        obs_vector = np.expand_dims(observation, axis=0)
-        probs = sess.run(pl_calc, feed_dict={pl_state: obs_vector})
-        action = 0 if random.uniform(0,1) < probs[0][0] else 1 # take action
-        states.append(observation)
+        obs_vector = Variable(Tensor(observation).unsqueeze(0))
+        prob = policy_gradient(obs_vector)
+        action = 0 if random.uniform(0,1) < prob.data[0][0] else 1
         actionblank = np.zeros(2)
         actionblank[action] = 1
-        actions.append(actionblank)
 
         old_observation = observation
         observation, reward, done, info = env.step(action)
-        env.render()
         transitions.append((old_observation, action, reward))
         totalreward += reward
+
+        actions.append(actionblank)
+        probs.append(prob)
 
         if done:
             break
 
-    for index, trans in enumerate(transitions):
+    discount = 1
+    for i1, trans in enumerate(transitions):
         obs, action, reward = trans
 
         future_reward = 0
-        future_transitions = len(transitions) - index
-        decrease = 1
-        for index2 in range(future_transitions):
-            future_reward += transitions[(index2) + index][2] * decrease
-            decrease = decrease * gamma
-        obs_vector = np.expand_dims(obs, axis=0)
-        currentval = sess.run(vl_calc, feed_dict={vl_state: obs_vector})[0][0]
+        for i2 in range(i1, len(transitions)):
+            future_reward = discount * transitions[i2][2]
+            discount *= gamma
+        future_rewards.append(future_reward)
+        pred_value = value_gradient(Variable(Tensor(obs).unsqueeze(0)))
+        pred_values.append(pred_value)
 
-        advs.append(future_reward - currentval)
-        update_vals.append(future_reward)
+        advantages.append(future_reward - pred_value)
 
-    update_vals_vector = np.expand_dims(update_vals, axis=1) # [n,1]
-    sess.run(vl_optimizer, feed_dict={vl_state: states, vl_newvals: update_vals_vector})
-    advs_vector = np.expand_dims(advs, axis=1) # [n,1]
-    sess.run(pl_optimizer, feed_dict={pl_state: states, pl_adv: advs_vector, pl_actions: actions})
+
+
+    vl_loss_func = nn.MSELoss()
+    pred_value_vector = torch.cat(pred_values)
+    vl_loss = vl_loss_func(pred_value_vector,Variable(Tensor(future_rewards).unsqueeze(1),requires_grad=False))
+    vl_loss.backward()
+    vl_optimizer.step()
+
+    prob_vector = torch.cat(probs)
+    action_vector = Variable(Tensor(actions), requires_grad=False) # [N, 1]
+    good_prob = (prob_vector * action_vector).sum(dim=1)
+    adv_vector = torch.cat(advantages)
+    adv_vector.requires_grad = False
+    pl_loss -= good_prob.log() * adv_vector # [N, 1]
+    pl_loss.backward()
+    pl_optimizer.step()
 
     return totalreward
 
 env = gym.make('CartPole-v0')
-policy_grad = policy_gradient()
-value_grad = value_gradient()
-sess = tf.InteractiveSession()
-sess.run(tf.global_variables_initializer())
+policy_grad = PolicyGradient()
+value_grad = ValueGradient()
+pl_optimizer = optim.Adam(policy_grad.parameters(), lr=0.01)
+vl_optimizer = optim.Adam(value_grad.parameters(), lr=0.1)
 
 rewards = []
 
 for i in range(10000):
-    reward = run_episode(env, policy_grad, value_grad, sess)
+    reward = run_episode(env,policy_grad,value_grad,pl_optimizer,vl_optimizer)
+    print(reward)
     rewards.append(reward)
 
-# rewards = np.array(rewards)
-# np.save('pg_adv.npy', rewards)
-
-
-
-
-
-
+rewards = np.array(rewards)
+np.save('pg_adv.npy', rewards)
 
 
 
