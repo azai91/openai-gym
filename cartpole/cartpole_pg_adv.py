@@ -107,12 +107,9 @@ vl_optimizer = optim.Adam(value_grad.parameters(), lr=0.1)
 
 rewards = []
 
-for i in range(10000):
+for i in range(1000):
     reward, advantages, vl_loss = run_episode(env,policy_grad,value_grad,pl_optimizer,vl_optimizer)
     rewards.append(reward)
-    if i % 100 == 0:
-        print(i, reward, sum(advantages))
-        print(vl_loss[0][0])
 
 rewards = np.array(rewards)
 np.save('pg_adv.npy', rewards)

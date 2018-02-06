@@ -25,7 +25,6 @@ def run_episode(env, policy_gradient, pl_optimizer):
     observation = env.reset()
     rewards = []
     future_rewards = []
-    loss = 0
     actions = []
     probs = []
     totalreward = 0
@@ -50,21 +49,19 @@ def run_episode(env, policy_gradient, pl_optimizer):
         if done:
             break
 
-    discount = 1
     for i1 in range(len(rewards)):
+        discount = 1
         future_reward = 0
         for i2 in range(i1, len(rewards)):
-            future_reward = discount * rewards[i2]
+            future_reward += discount * rewards[i2]
             discount *= gamma
         future_rewards.append(future_reward)
 
-    # import ipdb
-    # ipdb.set_trace()
     prob_vector = torch.cat(probs)
     action_vector = Variable(Tensor(actions)) # [N, 1]
     good_prob = (prob_vector * action_vector).sum(dim=1).unsqueeze(dim=1)
     reward_vector = Variable(Tensor(rewards).unsqueeze(1))
-    loss = good_prob.log() * reward_vector # [N, 1]
+    loss = (good_prob.log() * reward_vector).sum() # [N, 1]
     loss.backward()
     pl_optimizer.step()
 
@@ -76,7 +73,7 @@ pl_optimizer = optim.Adam(policy_grad.parameters(), lr=0.01)
 
 rewards = []
 
-for i in range(10000):
+for i in range(1000):
     reward = run_episode(env, policy_grad, pl_optimizer)
     rewards.append(reward)
 
