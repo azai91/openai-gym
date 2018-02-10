@@ -8,6 +8,7 @@ from torch import nn
 from torch.autograd import Variable
 from torch import Tensor
 import torch.optim as optim
+from torch.distributions import Categorical
 
 gamma = 0.97
 
@@ -37,8 +38,7 @@ def run_episode(env, policy_gradient,value_gradient,pl_optimizer,vl_optimizer):
     observation = env.reset()
     transitions = []
     future_rewards = []
-    actions = []
-    probs = []
+    log_prob_actions = []
     totalreward = 0
     advantages = []
     pred_values = []
@@ -49,28 +49,27 @@ def run_episode(env, policy_gradient,value_gradient,pl_optimizer,vl_optimizer):
     for _ in range(200):
         obs_vector = Variable(Tensor(observation).unsqueeze(0))
         prob = policy_gradient(obs_vector)
-        action = 0 if random.uniform(0,1) < prob.data[0][0] else 1
-        actionblank = np.zeros(2)
-        actionblank[action] = 1
+        m = Categorical(prob)
+        action = m.sample()
 
         old_observation = observation
-        observation, reward, done, info = env.step(action)
-        transitions.append((old_observation, action, reward))
+        observation, reward, done, info = env.step(action.data[0])
+        transitions.append((old_observation, None, reward))
         totalreward += reward
 
-        actions.append(actionblank)
-        probs.append(prob)
+        log_prob_actions.append(m.log_prob(action))
 
         if done:
             break
 
     for i1, trans in enumerate(transitions):
-        obs, action, reward = trans
+        obs, _, _ = trans
 
         future_reward = 0
         discount = 1
         for i2 in range(i1, len(transitions)):
-            future_reward += discount * transitions[i2][2]
+            reward = transitions[i2][2]
+            future_reward += discount * reward
             discount *= gamma
         future_rewards.append(future_reward)
         pred_value = value_gradient(Variable(Tensor(obs).unsqueeze(0)))
@@ -78,22 +77,17 @@ def run_episode(env, policy_gradient,value_gradient,pl_optimizer,vl_optimizer):
 
         advantages.append(future_reward - pred_value.data[0][0])
 
-
-
     vl_loss_func = nn.MSELoss()
 
-    pred_value_vector = torch.cat(pred_values)
+    pred_value_vector = torch.cat(pred_values) # [N]
     future_values_vector = Variable(Tensor(future_rewards).unsqueeze(1))
     vl_loss = vl_loss_func(pred_value_vector,future_values_vector)
     vl_loss.backward()
     vl_optimizer.step()
 
-    prob_vector = torch.cat(probs)
-    action_vector = Variable(Tensor(actions)) # [N, 1]
-    good_prob = (prob_vector * action_vector).sum(dim=1).unsqueeze(dim=1)
-
-    adv_vector = Variable(Tensor(advantages).unsqueeze(1))
-    pl_loss = -(good_prob.log() * adv_vector).sum() # [N, 1]
+    actions_vector = torch.cat(log_prob_actions) # [N]
+    adv_vector = Variable(Tensor(advantages)) # [N]
+    pl_loss = -(actions_vector * adv_vector).sum()
     pl_loss.backward()
     pl_optimizer.step()
 
@@ -112,7 +106,7 @@ for i in range(1000):
     rewards.append(reward)
 
 rewards = np.array(rewards)
-np.save('pg_adv.npy', rewards)
+np.save('pg_adv_refactor.npy', rewards)
 
 
 
