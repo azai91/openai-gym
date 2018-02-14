@@ -26,8 +26,14 @@ class OrnsteinUhlenbeckActionNoise:
         self.X = self.X + dx
         return self.X * self.action_max
 
+
+def fanin_init(size, fanin=None):
+    fanin = fanin or size[0]
+    v = 1. / np.sqrt(fanin)
+    return torch.Tensor(size).uniform_(-v, v)
+
 class Actor(nn.Module):
-    def __init__(self, state_dim ,action_dim, action_lim):
+    def __init__(self, state_dim ,action_dim, action_lim, init_w=3e-3):
         super(Actor, self).__init__()
         # self.state_dim = state_dim
         # self.action_dim = action_dim
@@ -37,6 +43,13 @@ class Actor(nn.Module):
         self.fc2 = nn.Linear(256, 128)
         self.fc3 = nn.Linear(128, 64)
         self.fc4 = nn.Linear(64, action_dim)
+        self.init_weights(init_w)
+
+    def init_weights(self, init_w):
+        self.fc1.weight.data = fanin_init(self.fc1.weight.data.size())
+        self.fc2.weight.data = fanin_init(self.fc2.weight.data.size())
+        self.fc3.weight.data = fanin_init(self.fc3.weight.data.size())
+        self.fc4.weight.data.uniform_(-init_w, init_w)
 
     def forward(self, state):
         x = F.relu(self.fc1(state))
@@ -108,19 +121,25 @@ def train(env, actor_network, critic_network, actor_optimizer, critic_optimizer,
         pred_value = critic_network(Variable(Tensor(observation).unsqueeze(0)), action.detach())
         predicted_values.append(pred_value)
 
+
     pred_vector = torch.cat(predicted_values)
     future_rewards_vector = Variable(Tensor(future_rewards).unsqueeze(1))
     # import ipdb; ipdb.set_trace()
     critic_loss = F.smooth_l1_loss(pred_vector, future_rewards_vector)
     critic_loss.backward()
-    critic_optimizer.step()
+
 
     action_vector = torch.cat(actions)
+    # init value function smaller
     value_vector = critic_network(Variable(Tensor(states)), action_vector)
-    import ipdb; ipdb.set_trace()
     actor_loss = -torch.sum(value_vector)
     actor_loss.backward()
     actor_optimizer.step()
+    import ipdb;
+    ipdb.set_trace()
+    critic_optimizer.step()
+
+
     print(critic_loss.data[0], actor_loss.data[0])
 
     return totalreward
