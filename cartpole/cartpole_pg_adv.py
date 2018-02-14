@@ -33,7 +33,7 @@ class ValueGradient(nn.Module):
         return reward
 
 
-def run_episode(env, policy_gradient,value_gradient,pl_optimizer,vl_optimizer):
+def run_episode(env, policy_gradient, value_gradient, pl_optimizer, vl_optimizer):
 
     observation = env.reset()
     transitions = []

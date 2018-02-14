@@ -2,7 +2,7 @@ from collections import deque
 import numpy as np
 import random
 
-class ReplyBuffer(object):
+class ReplayBuffer(object):
     def __init__(self, buffer_size):
         self.buffer_size = buffer_size
         self.count = 0
