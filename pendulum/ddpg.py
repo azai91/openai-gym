@@ -7,6 +7,8 @@ import torch.optim as optim
 from torch import Tensor
 import numpy as np
 
+from replay_buffer import ReplayBuffer
+
 
 class OrnsteinUhlenbeckActionNoise:
     def __init__(self, action_dim, action_max, mu = 0, theta = 0.15, sigma = 0.2):
@@ -26,6 +28,16 @@ class OrnsteinUhlenbeckActionNoise:
         self.X = self.X + dx
         return self.X * self.action_max
 
+def copy_params(target_network, source_network):
+    for target_params, source_params in zip(target_network.parameters(), source_network.parameters()):
+        target_params.data.copy_(source_params.data)
+
+def soft_copy_params(target_network, source_network, tau=0.001):
+    for target_param, source_params in zip(target_network.parameters(), source_network.parameters()):
+        target_param.data.copy_(
+            target_param.data * (1.0 - tau) + source_params.data * tau
+        )
+
 
 def fanin_init(size, fanin=None):
     fanin = fanin or size[0]
@@ -43,7 +55,7 @@ class Actor(nn.Module):
         self.fc2 = nn.Linear(256, 128)
         self.fc3 = nn.Linear(128, 64)
         self.fc4 = nn.Linear(64, action_dim)
-        self.init_weights(init_w)
+        # self.init_weights(init_w)
 
     def init_weights(self, init_w):
         self.fc1.weight.data = fanin_init(self.fc1.weight.data.size())
@@ -80,67 +92,78 @@ class Critic(nn.Module):
         x = self.fc3(x)
         return x
 
-MAX_STEPS = 100
-GAMMA = 0.5
+MAX_STEPS_PER_EPISODE = 1000
+GAMMA = 0.99
+MINI_BATCH_SIZE = 128
 
-def train(env, actor_network, critic_network, actor_optimizer, critic_optimizer, noise):
+def train(
+        env,
+        actor_network,
+        critic_network,
+        target_actor,
+        target_critic,
+        actor_optimizer,
+        critic_optimizer,
+        noise,
+        buffer
+    ):
     observation = env.reset()
-    transitions = []
-    future_rewards = []
-    predicted_values = []
-    states = []
-    actions = []
     totalreward = 0
 
-    actor_optimizer.zero_grad()
-    critic_optimizer.zero_grad()
 
-    for r in range(MAX_STEPS):
+    for r in range(MAX_STEPS_PER_EPISODE):
         # env.render()
         obs_vector = Variable(Tensor(observation).unsqueeze(0))
         # need to insert exploration
         action = actor_network(obs_vector)
-        actions.append(action)
-        action = action + Variable(Tensor(noise.sample()))
+        action = action.data.numpy()[0] + noise.sample()
         old_observation = observation
-        observation, reward, done, info = env.step(action.data[0])
+        observation, reward, done, info = env.step(action)
         totalreward += reward
-        transitions.append((old_observation, action, reward))
-        states.append(old_observation)
+
+        buffer.add((old_observation, action, reward, observation))
+
+        if len(buffer) > MINI_BATCH_SIZE:
+
+            observations, actions, rewards, next_observations = buffer.sample_batch(MINI_BATCH_SIZE)
+
+            obs_vector = Variable(Tensor(observations))
+            action_vector = Variable(Tensor(actions))
+            next_obs_vector = Variable(Tensor(next_observations))
+
+
+            # critic update
+
+            next_actions = target_actor(next_obs_vector).detach()
+            next_val_vector = torch.squeeze(target_critic(next_obs_vector, next_actions).detach())
+
+            rewards_vector = Variable(Tensor(rewards)) + GAMMA * next_val_vector
+
+            predicted_values_vector = critic_network(obs_vector, action_vector)
+            critic_loss = F.smooth_l1_loss(predicted_values_vector, rewards_vector)
+            critic_optimizer.zero_grad()
+
+            critic_loss.backward(retain_graph=True)
+            critic_optimizer.step()
+
+            # actor update
+
+            new_actions = actor_network(obs_vector)
+
+            value_vector = critic_network(obs_vector, new_actions)
+            actor_loss = -torch.sum(value_vector)
+
+            actor_optimizer.zero_grad()
+            actor_loss.backward(retain_graph=True)
+            actor_optimizer.step()
+
+            soft_copy_params(target_actor, actor)
+            soft_copy_params(target_critic, critic)
+            print(critic_loss.data[0] / MINI_BATCH_SIZE, actor_loss.data[0] / MINI_BATCH_SIZE)
+
         if done:
             break
 
-    for i1 in range(len(transitions)):
-        observation, action, reward = transitions[i1]
-        discount = 1
-        future_reward = 0
-        for i2 in range(i1, len(transitions)):
-            future_reward += transitions[i2][2] * discount
-            discount *= GAMMA
-        future_rewards.append(future_reward)
-        pred_value = critic_network(Variable(Tensor(observation).unsqueeze(0)), action.detach())
-        predicted_values.append(pred_value)
-
-
-    pred_vector = torch.cat(predicted_values)
-    future_rewards_vector = Variable(Tensor(future_rewards).unsqueeze(1))
-    # import ipdb; ipdb.set_trace()
-    critic_loss = F.smooth_l1_loss(pred_vector, future_rewards_vector)
-    critic_loss.backward()
-
-
-    action_vector = torch.cat(actions)
-    # init value function smaller
-    value_vector = critic_network(Variable(Tensor(states)), action_vector)
-    actor_loss = -torch.sum(value_vector)
-    actor_loss.backward()
-    actor_optimizer.step()
-    import ipdb;
-    ipdb.set_trace()
-    critic_optimizer.step()
-
-
-    print(critic_loss.data[0], actor_loss.data[0])
 
     return totalreward
 
@@ -152,14 +175,23 @@ env = gym.make('Pendulum-v0')
 S_DIM = env.observation_space.shape[0]
 A_DIM = env.action_space.shape[0]
 A_MAX = float(env.action_space.high[0])
+BUFFER_SIZE = 1000000
 
 actor = Actor(S_DIM, A_DIM, A_MAX)
 critic = Critic(S_DIM, A_DIM)
-actor_optimizer = optim.Adam(actor.parameters(), lr=0.01)
-critic_optimizer = optim.Adam(critic.parameters(), lr=0.1)
+target_actor = Actor(S_DIM, A_DIM, A_MAX)
+target_critic = Critic(S_DIM, A_DIM)
+
+copy_params(target_actor, actor)
+copy_params(target_critic, critic)
+
+actor_optimizer = optim.Adam(actor.parameters(), lr=0.001)
+critic_optimizer = optim.Adam(critic.parameters(), lr=0.001)
 noise = OrnsteinUhlenbeckActionNoise(A_DIM, A_MAX)
 
-EPOCHS = 200
+replay_buffer = ReplayBuffer(BUFFER_SIZE)
+EPOCHS = 2000
 
 for epoch in range(EPOCHS):
-    reward = train(env, actor, critic, actor_optimizer, critic_optimizer, noise)
+    reward = train(env, actor, critic, target_actor, target_critic, actor_optimizer, critic_optimizer, noise, replay_buffer)
+    # print(reward)
